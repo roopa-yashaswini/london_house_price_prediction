@@ -1,0 +1,1134 @@
+---
+title: 'Data Science Capstone Project'
+author: "K. Roopa Yashaswini"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+      number_sections: true
+      highlight: haddock
+      theme: spacelab
+      toc: yes
+      toc_depth: 2
+      toc_float:
+        collapsed: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{=html}
+<style>
+div.navy1 { background-color:#686868; border-radius: 5px; padding: 20px; border-style: groove; color: #ffffff;}
+
+</style>
+```
+```{r, load_libraries, include = FALSE}
+
+if(!is.element("tidyverse", installed.packages()[,1]))
+{  install.packages("tidyverse", repos = "http://cran.us.r-project.org")}
+
+if(!is.element("Hmisc", installed.packages()[,1]))
+{  install.packages("Hmisc", repos = "http://cran.us.r-project.org")} #package for data summary using `describe`
+
+if(!is.element("ggplot2", installed.packages()[,1]))
+{  install.packages("ggplot2", repos = "http://cran.us.r-project.org")} #package for plots
+if(!is.element("ggthemes", installed.packages()[,1]))
+{  install.packages("ggthemes", repos = "http://cran.us.r-project.org")} #package to make fancier ggplots
+
+if(!is.element("janitor", installed.packages()[,1]))
+{ install.packages("janitor", repos = "http://cran.us.r-project.org")} #package to visualize results of machine learning tools
+if(!is.element("rpart.plot", installed.packages()[,1]))
+{  install.packages("rpart.plot", repos = "http://cran.us.r-project.org")} #package to visualize trees
+
+library(rpart.plot)
+library(caret)
+library(tidyverse) # the usual stuff: dplyr, readr, and other goodies
+library(lubridate)
+library(janitor) # clean_names()
+library(Hmisc)
+library(e1071)
+library(glmnet)
+library(randomForest)
+library(caretEnsemble)
+```
+
+# Introduction and learning objectives
+
+::: navy1
+The purpose of this exercise is to build an estimation engine to guide investment decisions in London house market. You will first build machine learning algorithms (and tune them) to estimate the house prices given variety of information about each property. Then, using your algorithm, you will choose 200 houses to invest in out of about 2000 houses on the market at the moment.
+
+<b>Learning objectives</b>
+
+<ol type="i">
+
+<li>Using different data mining algorithms for prediction.</li>
+
+<li>Dealing with large data sets</li>
+
+<li>Tuning data mining algorithms</li>
+
+<li>Interpreting data mining algorithms and deducing importance of variables</li>
+
+<li>Using results of data mining algorithms to make business decisions</li>
+
+</ol>
+:::
+
+# Load data
+
+There are two sets of data, i) training data that has the actual prices ii) out of sample data that has the asking prices. 
+
+```{r read-investigate}
+#read in the data
+
+london_house_prices_2019_training <- read.csv("training_data_assignment_with_prices.csv")
+london_house_prices_2019_out_of_sample <- read.csv("test_data_assignment.csv")
+
+
+
+#fix data types in both data sets
+
+#fix dates
+london_house_prices_2019_training <- london_house_prices_2019_training %>% 
+  mutate(
+    date=as.Date(date)
+    )
+london_house_prices_2019_out_of_sample <- london_house_prices_2019_out_of_sample %>% 
+  mutate(
+    date=as.Date(date)
+    )
+#change characters to factors
+london_house_prices_2019_training <- london_house_prices_2019_training %>% 
+  mutate_if(is.character,as.factor)
+london_house_prices_2019_out_of_sample<-london_house_prices_2019_out_of_sample %>% 
+  mutate_if(is.character,as.factor)
+
+#take a quick look at what's in the data
+str(london_house_prices_2019_training)
+str(london_house_prices_2019_out_of_sample)
+
+
+
+```
+
+```{r split the price data to training and testing}
+#let's do the initial split
+library(rsample)
+
+train_test_split <- initial_split(london_house_prices_2019_training, prop = 0.75) #training set contains 75% of the data
+# Create the training dataset
+train_data <- training(train_test_split)
+test_data <- testing(train_test_split)
+
+
+
+```
+
+# Visualize data
+```{r visualize}
+ggplot(london_house_prices_2019_training, aes(x = date, y = price)) + 
+  # Define the aesthetics: 'date' is mapped to x-axis and 'price' to y-axis
+  geom_line(size = 0.5, alpha = 0.7) + 
+  # Add a line plot with a line thickness of 0.5 and transparency of 0.7
+  
+  labs(
+    title = "London House Prices Over Time",  # Add a title to the plot
+    x = "Date",                              # Label for the x-axis
+    y = "Price (£)"                          # Label for the y-axis
+  ) + 
+  
+  theme_minimal() + 
+  # Apply a minimal theme for a clean and simple appearance
+  
+  scale_y_continuous(labels = scales::comma) + 
+  # Format the y-axis labels to include commas for thousands (e.g., 1,000)
+  
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+    # Center-align the title (hjust = 0.5), set the font size to 14, and make it bold
+    
+    axis.title = element_text(size = 10), 
+    # Set the font size of axis titles to 10
+    
+    axis.text = element_text(size = 8) 
+    # Set the font size of axis text (tick labels) to 8
+  )
+```
+
+```{r}
+london_house_prices_2019_training %>%
+  mutate(month = month(date)) %>%  # Extract the month from the 'date' column and create a new 'month' column
+  
+  group_by(month) %>%  # Group the data by the 'month' column to calculate monthly averages
+  
+  summarise(avg_price = mean(price)) %>%  # Calculate the average house price for each month
+  
+  ggplot(aes(x = month, y = avg_price)) +  # Create a plot with 'month' on the x-axis and 'avg_price' on the y-axis
+  
+  geom_line(size = 0.5) +  # Add a line plot with a thickness of 0.5 for better visibility
+  
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +  # Set the x-axis breaks from 1 to 12 (for each month) and display month abbreviations (Jan, Feb, etc.)
+  
+  scale_y_continuous(labels = scales::comma) +  # Format the y-axis labels with commas for easier reading (e.g., 1,000 instead of 1000)
+  
+  labs(  # Add labels for the x-axis, y-axis, and the plot title
+    x = "Month",  # Label for the x-axis
+    y = "Average Price (£)",  # Label for the y-axis
+    title = "Average House Price by Month"  # Title of the plot
+  ) +
+  
+  theme_light() +  # Use a light theme for the plot background and gridlines
+  
+  theme(  # Customize the appearance of plot elements
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),  # Center the plot title, set font size to 14, and make it bold
+    axis.title = element_text(size = 10),  # Set font size for axis titles to 10
+    axis.text = element_text(size = 8)  # Set font size for axis tick labels to 8
+  )
+```
+
+```{r}
+london_house_prices_2019_training %>%
+  
+  group_by(property_type) %>%  # Group the data by 'property_type' to calculate the average price for each type
+  
+  summarise(avg_price = mean(price)) %>%  # Calculate the average price for each property type
+  
+  ggplot(aes(x = property_type, y = avg_price, fill = property_type)) +  # Create a bar plot with 'property_type' on the x-axis and 'avg_price' on the y-axis. Color bars by 'property_type'
+  
+    geom_col(show.legend = FALSE) +  # Use bars for visualization (geom_col), hide the legend as it is not necessary
+  
+    scale_y_continuous(labels = scales::comma) +  # Format the y-axis labels with commas for better readability (e.g., 1,000 instead of 1000)
+  
+    labs(  # Add labels for the axes and title of the plot
+      x = "Property Type",  # Label for the x-axis
+      y = "Average Price (£)",  # Label for the y-axis
+      title = "Average Price by Property Type in London"  # Title of the plot
+    ) +
+  
+    theme_minimal() +  # Use a minimal theme for a clean and simple background
+  
+    theme(  # Customize plot text appearance
+      plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),  # Center the plot title, set font size to 14, and make it bold
+      axis.title = element_text(size = 10),  # Set font size for axis titles to 10
+      axis.text = element_text(size = 8)  # Set font size for axis tick labels to 8
+    )
+```
+
+```{r}
+ggplot(london_house_prices_2019_training, aes(x = current_energy_rating, y = price, color = current_energy_rating)) +  # Create a scatter plot with 'current_energy_rating' on the x-axis, 'price' on the y-axis, and color the points by 'current_energy_rating'
+  
+  geom_jitter(width = 0.2, alpha = 0.7) +  # Add jitter to the points (to prevent overlap), with a width of 0.2 and alpha transparency set to 0.7 for better visualization
+  
+  geom_boxplot(aes(group = current_energy_rating), alpha = 0.2, color = "black", outlier.shape = NA) +  # Overlay a boxplot for each EPC rating (grouped by 'current_energy_rating'), with alpha transparency for the box and no outlier markers
+  
+  scale_color_brewer(palette = "Set2") +  # Apply a color palette from ColorBrewer ("Set2") for better visual distinction between EPC ratings
+  
+  scale_y_log10(labels = scales::comma) +  # Apply a log10 scale to the y-axis to better handle large price values, with formatted labels that include commas for readability
+  
+  labs(  # Add labels for the plot
+    title = "Relationship Between EPC Rating and Price",  # Title of the plot
+    subtitle = "Log-transformed price distribution across EPC ratings",  # Subtitle explaining the plot context
+    x = "EPC Rating",  # Label for the x-axis
+    y = "Price (£)",  # Label for the y-axis
+    color = "EPC Rating"  # Label for the color legend
+  ) +
+  theme_minimal(base_size = 10) +  # Use a minimal theme with a larger base font size (10) for readability
+  
+  theme(  # Customize plot text and other elements
+    plot.title = element_text(face = "bold"),  # Make the plot title bold
+    legend.position = "none"  # Remove the legend from the plot as it is not needed (since color is already encoded in the points)
+  )
+
+```
+
+```{r}
+# Create the line chart
+london_house_prices_2019_training %>%
+  mutate(month = month(date)) %>%  # Extract month from date
+  group_by(month, whether_old_or_new) %>%  # Group by month
+  summarise(avg_price = mean(price)) %>% 
+  ggplot(aes(x = month, y = avg_price, color = whether_old_or_new)) +
+  geom_line(size = 1) +  # Thicker lines for better visibility
+  geom_point(size = 2, alpha = 0.8) +  # Add points with some transparency
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +  # Month abbreviations
+  scale_y_continuous(labels = scales::comma) +  # Format y-axis labels
+  labs(
+    x = "Month",
+    y = "Average Price (£)",
+    title = "Average House Price by Month and Property Condition",
+    color = "Property Condition\n(Old or New)"
+  ) +
+  theme_light() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8)
+  )
+```
+
+```{r}
+ggplot(london_house_prices_2019_training, aes(x = average_income, y = price)) +  # Create a line plot with 'average_income' on the x-axis and 'price' on the y-axis
+  
+  geom_line(color = "steelblue", size = 0.8, alpha = 0.8) +  # Add a line to the plot with 'steelblue' color, line size of 0.8, and alpha transparency of 0.8 for a slightly faded appearance
+  
+  labs(  # Add titles and axis labels to the plot
+    title = "Relationship Between Average Income and House Prices",  # Main title of the plot
+    x = "Average Income (£)",  # Label for the x-axis
+    y = "Price (£)"  # Label for the y-axis
+  ) +
+  
+  scale_y_continuous(labels = scales::comma) +  # Format y-axis labels with commas for easier readability (e.g., 1,000 instead of 1000)
+  
+  scale_x_continuous(labels = scales::comma) +  # Format x-axis labels with commas for easier readability (e.g., 1,000 instead of 1000)
+  
+  theme_minimal() +  # Use a minimalistic theme for a clean plot appearance
+  
+  theme(  # Customize plot text and other elements
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),  # Make the plot title bold, set font size to 14, and center-align the title
+    
+    axis.text = element_text(size = 8)  # Increase the font size of the axis tick labels to 8 for better readability
+  )
+```
+
+```{r}
+london_house_prices_2019_training %>% 
+  group_by(district) %>%  # Group the data by 'district' to calculate average price per district
+  
+  summarise(avg_price_by_district = mean(price)) %>%  # Calculate the average house price for each district
+  
+  mutate(district = fct_reorder(district, avg_price_by_district)) %>%  # Reorder the districts by average price in ascending order
+  
+  slice_head(n = 20) %>%  # Select the top 20 districts with the highest average price
+  
+  ggplot(aes(x = avg_price_by_district, y = district, fill = avg_price_by_district)) +  # Create a horizontal bar plot with 'avg_price_by_district' on the x-axis and 'district' on the y-axis, fill color based on average price
+  
+  geom_col(show.legend = FALSE) +  # Plot the bars using 'geom_col' and remove the legend (since it's not necessary for the plot)
+  
+  scale_fill_gradient(low = "skyblue", high = "blue") +  # Apply a color gradient fill, where low values are 'skyblue' and high values are 'blue'
+  
+  labs(  # Add titles and axis labels
+    title = "Top 20 Districts by Average House Price",  # Title of the plot
+    x = "Average Price (£)",  # Label for the x-axis
+    y = "District"  # Label for the y-axis
+  ) +
+  
+  scale_x_continuous(labels = scales::comma) +  # Format the x-axis with commas to separate thousands for better readability
+  
+  theme_minimal() +  # Use a minimal theme with a clean and simple design
+  
+  theme(  # Customize plot elements for better presentation
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),  # Make the plot title bold, set font size to 16, and center-align it
+    axis.title = element_text(face = "bold"),  # Make axis titles bold for emphasis
+    axis.text = element_text(size = 8)  # Increase the font size of axis tick labels for readability
+  )
+```
+
+
+```{r, correlation table, warning=FALSE, message=FALSE}
+
+library("GGally")  # Load the GGally package, which extends ggplot2 with additional functions like ggcorr
+
+london_house_prices_2019_training %>% 
+  select(-ID) %>%  # Remove the 'ID' column from the dataset as it is not needed for the correlation plot
+  
+  ggcorr(  # Create a correlation matrix plot using the ggcorr function
+    method = c("pairwise", "pearson"),  # Use the Pearson correlation coefficient for pairwise comparisons of variables
+    
+    layout.exp = 2,  # Adjust the layout of the plot (higher values spread the plot more)
+    
+    label_round = 2,  # Round the correlation coefficient values to 2 decimal places for readability
+    
+    label = TRUE,  # Display correlation coefficient values as labels on the plot
+    
+    label_size = 2,  # Set the size of the correlation coefficient labels
+    
+    hjust = 1,  # Adjust the horizontal justification of the labels to the right
+    
+    nbreaks = 5,  # Set the number of breaks (intervals) for the color scale
+    
+    size = 2,  # Set the size of the circles representing correlations
+    
+    angle = -20  # Rotate the labels by -20 degrees for better alignment
+  )
+
+```
+
+# Fit a linear regression model
+
+### Without Interaction Variables
+
+```{r}
+#Define the formula for the model without interaction terms
+formula_without_interaction_var <- price ~ property_type + latitude + longitude + current_energy_rating +
+  co2_emissions_current + total_floor_area + average_income + london_zone + num_tube_lines +
+  windows_energy_eff + altitude + district  # The dependent variable 'price' is predicted by various independent variables without interaction
+
+# Define the formula for the model with interaction terms
+formula_interaction_var <- price ~ latitude + longitude + current_energy_rating + co2_emissions_current +
+  num_tube_lines + windows_energy_eff + altitude + district + total_floor_area + property_type +
+  average_income * london_zone  # In this model, the interaction between 'average_income' and 'london_zone' is considered
+
+# Define the control settings for cross-validation
+control <- trainControl(  # 'trainControl' is used to specify parameters for model training
+    method = "cv",  # Set cross-validation method ('cv' stands for k-fold cross-validation)
+    number = 5,  # Number of folds in cross-validation (5-fold cross-validation)
+    verboseIter = TRUE  # Enable progress reporting after each iteration of model training
+)
+```
+
+```{r LR model}
+
+#we are going to train the model and report the results using k-fold cross validation
+model1_lm<-train(
+    formula_without_interaction_var,
+    train_data,
+   method = "lm",
+    trControl = control
+   )
+
+# summary of the results
+summary(model1_lm)
+```
+
+```{r}
+# we can check variable importance as well
+importance <- varImp(model1_lm, scale=TRUE)
+plot(importance)
+```
+
+
+```{r}
+# We can predict the testing values
+
+predictions <- predict(model1_lm,test_data)
+
+lr_results<-data.frame(  RMSE = RMSE(predictions, test_data$price),
+                            Rsquare = R2(predictions, test_data$price))
+
+
+lr_results
+
+#We can predict prices for out of sample data the same way
+predictions_oos <- predict(model1_lm,london_house_prices_2019_out_of_sample)
+
+lr_results_oos<-data.frame(  RMSE = RMSE(predictions_oos, london_house_prices_2019_out_of_sample$asking_price),
+                            Rsquare = R2(predictions_oos, london_house_prices_2019_out_of_sample$asking_price))
+
+lr_results_oos
+```
+
+### With Interaction Variables
+
+```{r}
+# Train a linear regression model with interaction terms
+model1_lm_interaction <- train(  # Use the 'train' function from the caret package to train the model
+    formula_interaction_var,  # Use the formula that includes interaction terms between 'average_income' and 'london_zone'
+    train_data,  # Use the 'train_data' dataset for training the model
+    method = "lm",  # Specify that the model type is linear regression ('lm' stands for linear model)
+    trControl = control  # Use the predefined 'control' settings for cross-validation (5-fold cross-validation)
+)
+
+# Display the summary of the model's results
+summary(model1_lm_interaction)  # Output the detailed summary of the linear regression model, showing coefficients, R-squared, p-values, etc.
+```
+
+```{r}
+# Calculate the variable importance for the trained linear regression model
+importance <- varImp(model1_lm_interaction, scale = TRUE)  # Use 'varImp' function to calculate the importance of each predictor variable, scaling the importance values to make them comparable
+
+# Plot the variable importance results
+plot(importance)  
+```
+
+```{r}
+# Generate predictions using the trained model on the test dataset
+predictions_interaction <- predict(model1_lm_interaction, test_data)  # Use the 'predict' function to make predictions on the 'test_data' using the trained model
+
+# Calculate performance metrics (RMSE and R-squared) for the model on the test dataset
+lr_results_interaction <- data.frame(  # Create a data frame to store model performance results
+    RMSE = RMSE(predictions_interaction, test_data$price),  # Calculate the Root Mean Squared Error (RMSE) between the predicted and actual prices
+    Rsquare = R2(predictions_interaction, test_data$price)  # Calculate the R-squared value, a measure of how well the model explains the variance in the actual prices
+)
+
+# Display the model performance results for the test dataset
+lr_results_interaction  # Output the results (RMSE and R-squared) for the test dataset
+
+# Predict prices for out-of-sample (OOS) data using the trained model
+predictions_oos_interaction <- predict(model1_lm_interaction, london_house_prices_2019_out_of_sample)  # Make predictions on the out-of-sample data
+
+# Calculate performance metrics (RMSE and R-squared) for the model on the out-of-sample dataset
+lr_results_oos_interaction <- data.frame(  # Create a data frame to store the performance metrics
+    RMSE = RMSE(predictions_oos_interaction, london_house_prices_2019_out_of_sample$asking_price),  # Calculate RMSE for out-of-sample predictions
+    Rsquare = R2(predictions_oos_interaction, london_house_prices_2019_out_of_sample$asking_price)  # Calculate R-squared for out-of-sample predictions
+)
+
+# Display the model performance results for the out-of-sample dataset
+lr_results_oos_interaction  # Output the results (RMSE and R-squared) for the out-of-sample dataset
+```
+
+# Fit a tree model
+
+Next I fit a tree model using the same subset of features.
+
+### Without Interaction Variables
+
+```{r tree model}
+
+# # Train a decision tree model (using rpart method) without interaction terms
+model2_tree <- train(  # Use the 'train' function from caret to train the model
+  formula_without_interaction_var,  # Use the formula without interaction terms for the model
+
+  train_data,  # Use the 'train_data' dataset for training the model
+
+  method = "rpart",  # Specify that the model type is a decision tree (rpart stands for recursive partitioning)
+
+  trControl = control,  # Use the predefined 'control' settings for cross-validation (5-fold cross-validation)
+
+  tuneLength = 8  # Perform hyperparameter tuning, testing 8 different values for the tree complexity parameter
+)
+
+# View the performance results of the decision tree model
+model2_tree$results  # Display the model performance metrics (e.g., RMSE, accuracy) from the cross-validation results
+
+# Visualize the final decision tree
+rpart.plot(model2_tree$finalModel)  # Use the 'rpart.plot' function to visualize the structure of the final decision tree
+
+# Calculate and visualize the variable importance for the decision tree model
+importance <- varImp(model2_tree, scale = TRUE)  # Calculate the importance of each predictor variable in the decision tree model, scaling the values for comparability
+
+plot(importance)  # Plot the variable importance, showing the relative importance of each predictor variable in predicting the target variable
+
+```
+
+```{r}
+# # Train a decision tree model (using rpart method) without interaction terms
+model2_tree <- train(  # Use the 'train' function from caret to train the model
+  formula_without_interaction_var,  # Use the formula without interaction terms for the model
+
+  train_data,  # Use the 'train_data' dataset for training the model
+
+  method = "rpart",  # Specify that the model type is a decision tree (rpart stands for recursive partitioning)
+
+  trControl = control,  # Use the predefined 'control' settings for cross-validation (5-fold cross-validation)
+
+  tuneLength = 10  # Perform hyperparameter tuning, testing 10 different values for the tree complexity parameter
+)
+
+# View the performance results of the decision tree model
+model2_tree$results  # Display the model performance metrics (e.g., RMSE, accuracy) from the cross-validation results
+
+# Visualize the final decision tree
+rpart.plot(model2_tree$finalModel)  # Use the 'rpart.plot' function to visualize the structure of the final decision tree
+
+# Calculate and visualize the variable importance for the decision tree model
+importance <- varImp(model2_tree, scale = TRUE)  # Calculate the importance of each predictor variable in the decision tree model, scaling the values for comparability
+
+plot(importance)  # Plot the variable importance, showing the relative importance of each predictor variable in predicting the target variable
+```
+
+```{r}
+# # Train a decision tree model (using rpart method) without interaction terms
+model2_tree <- train(  # Use the 'train' function from caret to train the model
+  formula_without_interaction_var,  # Use the formula without interaction terms for the model
+
+  train_data,  # Use the 'train_data' dataset for training the model
+
+  method = "rpart",  # Specify that the model type is a decision tree (rpart stands for recursive partitioning)
+
+  trControl = control,  # Use the predefined 'control' settings for cross-validation (5-fold cross-validation)
+
+  tuneLength = 15  # Perform hyperparameter tuning, testing 15 different values for the tree complexity parameter
+)
+
+# View the performance results of the decision tree model
+model2_tree$results  # Display the model performance metrics (e.g., RMSE, accuracy) from the cross-validation results
+
+# Visualize the final decision tree
+rpart.plot(model2_tree$finalModel)  # Use the 'rpart.plot' function to visualize the structure of the final decision tree
+
+# Calculate and visualize the variable importance for the decision tree model
+importance <- varImp(model2_tree, scale = TRUE)  # Calculate the importance of each predictor variable in the decision tree model, scaling the values for comparability
+
+plot(importance)  # Plot the variable importance, showing the relative importance of each predictor variable in predicting the target variable
+```
+
+```{r commented}
+# # Train a decision tree model (using rpart method) without interaction terms
+model2_tree <- train(  # Use the 'train' function from caret to train the model
+  formula_without_interaction_var,  # Use the formula without interaction terms for the model
+
+  train_data,  # Use the 'train_data' dataset for training the model
+
+  method = "rpart",  # Specify that the model type is a decision tree (rpart stands for recursive partitioning)
+
+  trControl = control,  # Use the predefined 'control' settings for cross-validation (5-fold cross-validation)
+
+  tuneLength = 12  # Perform hyperparameter tuning, testing 12 different values for the tree complexity parameter
+)
+
+# View the performance results of the decision tree model
+model2_tree$results  # Display the model performance metrics (e.g., RMSE, accuracy) from the cross-validation results
+
+# Visualize the final decision tree
+rpart.plot(model2_tree$finalModel)  # Use the 'rpart.plot' function to visualize the structure of the final decision tree
+
+# Calculate and visualize the variable importance for the decision tree model
+importance <- varImp(model2_tree, scale = TRUE)  # Calculate the importance of each predictor variable in the decision tree model, scaling the values for comparability
+
+plot(importance)  # Plot the variable importance, showing the relative importance of each predictor variable in predicting the target variable
+```
+
+```{r}
+predictions_tree <- predict(model2_tree,test_data)
+
+lr_results_tree<-data.frame(  RMSE = RMSE(predictions_tree, test_data$price),
+                            Rsquare = R2(predictions_tree, test_data$price))
+
+
+lr_results_tree
+```
+
+### With Interaction Variables
+
+```{r}
+# # Train a decision tree model (using rpart method) without interaction terms
+model2_tree_interaction <- train(  # Use the 'train' function from caret to train the model
+  formula_interaction_var,  # Use the formula without interaction terms for the model
+
+  train_data,  # Use the 'train_data' dataset for training the model
+
+  method = "rpart",  # Specify that the model type is a decision tree (rpart stands for recursive partitioning)
+
+  trControl = control,  # Use the predefined 'control' settings for cross-validation (5-fold cross-validation)
+
+  tuneLength = 12  # Perform hyperparameter tuning, testing 12 different values for the tree complexity parameter
+)
+
+# View the performance results of the decision tree model
+model2_tree_interaction$results  # Display the model performance metrics (e.g., RMSE, accuracy) from the cross-validation results
+
+# Visualize the final decision tree
+rpart.plot(model2_tree_interaction$finalModel)  # Use the 'rpart.plot' function to visualize the structure of the final decision tree
+
+# Calculate and visualize the variable importance for the decision tree model
+importance <- varImp(model2_tree_interaction, scale = TRUE)  # Calculate the importance of each predictor variable in the decision tree model, scaling the values for comparability
+
+plot(importance)  # Plot the variable importance, showing the relative importance of each predictor variable in predicting the target variable
+```
+
+```{r}
+# Generate predictions using the trained decision tree model with interaction terms on the test dataset
+predictions_tree_interaction <- predict(model2_tree_interaction, test_data)  # Use the 'predict' function to make predictions on the 'test_data' using the trained model with interaction terms
+
+# Calculate performance metrics (RMSE and R-squared) for the model on the test dataset
+lr_results_tree_interaction <- data.frame(  # Create a data frame to store model performance results
+    RMSE = RMSE(predictions_tree_interaction, test_data$price),  # Calculate the Root Mean Squared Error (RMSE) between the predicted and actual prices
+    Rsquare = R2(predictions_tree_interaction, test_data$price)  # Calculate the R-squared value, which shows how well the model explains the variance in the actual prices
+)
+
+# Display the model performance results for the test dataset
+lr_results_tree_interaction  # Output the results (RMSE and R-squared) for the test dataset
+
+# Predict prices for out-of-sample (OOS) data using the trained model with interaction terms
+predictions_oos_tree_interaction <- predict(model2_tree_interaction, london_house_prices_2019_out_of_sample)  # Use the trained model to make predictions on the out-of-sample data
+
+```
+
+# Other algorithms
+
+## Lasso Regression
+
+```{r}
+# Define a list of predictor variables for the Lasso regression model
+predictor_list <- c("property_type",  # Include property type as a predictor
+                    "current_energy_rating",  # Include current energy rating as a predictor
+                    "total_floor_area",  # Include total floor area as a predictor
+                    "average_income",  # Include average income as a predictor
+                    "london_zone",  # Include London zone as a predictor
+                    "num_tube_lines",  # Include the number of tube lines nearby as a predictor
+                    "windows_energy_eff",  # Include windows energy efficiency as a predictor
+                    "district")  # Include district as a predictor
+
+# Extract the predictor variables from the training data
+train_predictors <- train_data[, predictor_list]  # Select the columns specified in the predictor_list
+
+# Extract the response variable (price) from the training data
+train_response <- train_data$price  # Select the 'price' column as the response variable
+
+# Convert the predictors to a numeric matrix, removing the intercept term (the first column generated by model.matrix)
+train_predictors_matrix <- model.matrix(~., data = train_predictors)[, -1]  # This creates a design matrix without the intercept
+
+# Train a Lasso regression model with 10-fold cross-validation
+lasso_model <- cv.glmnet(train_predictors_matrix, train_response, alpha = 1, nfolds = 10)  # alpha = 1 for Lasso (L1 regularization), nfolds = 10 for 10-fold cross-validation
+
+# Display the best lambda value (the penalty parameter that minimizes the cross-validation error)
+best_lambda <- lasso_model$lambda.min  # Extract the lambda value that results in the lowest cross-validation error
+cat("Optimal Lambda (Penalty):", best_lambda, "\n")  # Print the optimal lambda value
+
+# Extract the coefficients corresponding to the best lambda
+lasso_coefficients <- coef(lasso_model, s = "lambda.min")  # Get the coefficients for the model at the optimal lambda
+print(lasso_coefficients)  # Display the coefficients of the Lasso model
+
+```
+
+```{r}
+# Extract the predictor variables from the test data, using the same list as for the training data
+test_predictors <- test_data[, predictor_list]  # Select the columns specified in the 'predictor_list' from the test dataset
+
+# Convert the test predictors to a numeric matrix, removing the intercept term (same as in training data preprocessing)
+test_predictors_matrix <- model.matrix(~., data = test_predictors)[, -1]  # This creates a design matrix without the intercept
+
+# Predict using the trained Lasso model (the model trained earlier)
+predictions_lasso <- predict(lasso_model, newx = test_predictors_matrix, s = "lambda.min")  # Use the 'predict' function to generate predictions on the test set, using the optimal lambda
+
+# Calculate performance metrics (RMSE and R-squared) for the model's predictions on the test dataset
+lr_results_lasso <- data.frame(  # Create a data frame to store the performance metrics
+    RMSE = RMSE(predictions_lasso, test_data$price),  # Calculate the Root Mean Squared Error (RMSE) between the predicted and actual prices
+    Rsquare = R2(predictions_lasso, test_data$price)  # Calculate the R-squared value for the model's performance on the test data
+)
+
+# Display the model performance results for the test dataset
+lr_results_lasso  # Output the results (RMSE and R-squared) for the test dataset
+
+```
+
+## Random Forest
+
+### Without Interaction Variables
+
+```{r}
+# # Define a grid of hyperparameters for tuning the Random Forest model
+gridRF <- data.frame(  # Create a data frame to specify the grid of hyperparameters for tuning
+  .mtry = c(2:5),  # Number of variables to try at each split (mtry), ranging from 2 to 5
+  .splitrule = "variance",  # Specify the splitting rule used by the model (here, using variance as the criterion)
+  .min.node.size = 5  # Minimum number of data points in a terminal node (leaf node) of the tree
+)
+
+# Fit a Random Forest model using the 'ranger' method from the caret package
+rf_model <- train(  # Use the 'train' function from the caret package to train the model
+  formula_without_interaction_var,  # The formula for the model, without interaction terms
+  data = train_data,  # The training data used to fit the model
+  method = "ranger",  # Specify the 'ranger' method for Random Forest, an efficient implementation
+  metric = "RMSE",  # Specify that the performance metric to optimize is RMSE (Root Mean Squared Error)
+  trControl = control,  # Use the predefined cross-validation settings (control)
+  tuneGrid = gridRF,  # Use the hyperparameter grid defined earlier to tune the model
+  importance = 'permutation'  # Specify that variable importance should be calculated using permutation importance
+)
+
+```
+
+```{r}
+# # Generate predictions on the test dataset using the trained Random Forest model
+predictions_rf <- predict(rf_model, newdata = test_data)  # Use the 'predict' function to make predictions on the 'test_data' using the trained Random Forest model
+
+# Calculate performance metrics (RMSE and R-squared) for the Random Forest model's predictions on the test dataset
+lr_results_rf <- data.frame(  # Create a data frame to store the performance results
+    RMSE = RMSE(predictions_rf, test_data$price),  # Calculate the Root Mean Squared Error (RMSE) between the predicted and actual prices
+    Rsquare = R2(predictions_rf, test_data$price)  # Calculate the R-squared value, which measures how well the model explains the variance in the actual prices
+)
+
+# Display the model performance results for the test dataset
+lr_results_rf  # Output the results (RMSE and R-squared) for the Random Forest model on the test dataset
+
+# Predict house prices for out-of-sample data (not part of the test set) using the trained Random Forest model
+predictions_rf_oos <- predict(rf_model, london_house_prices_2019_out_of_sample)  # Use the trained Random Forest model to make predictions on the out-of-sample data
+
+```
+
+### With Interaction Variables
+
+```{r}
+# Define a grid of hyperparameters for tuning the Random Forest model
+gridRF <- data.frame(  # Create a data frame to specify the grid of hyperparameters for tuning
+  .mtry = c(2:5),  # Number of variables to consider at each split (mtry), ranging from 2 to 5
+  .splitrule = "variance",  # Splitting rule for decision trees, using variance as the criterion to minimize
+  .min.node.size = 5  # Minimum number of data points allowed in a terminal (leaf) node of the tree
+)
+
+# Fit a Random Forest model using the 'ranger' method from the caret package, incorporating interaction terms
+rf_model_interaction <- train(  # Use the 'train' function from the caret package to train the model
+  formula_interaction_var,  # The formula for the model, which includes interaction terms between predictors
+  data = train_data,  # The training dataset used to train the model
+  method = "ranger",  # Specify the 'ranger' method, which is a fast implementation of Random Forest (highly efficient)
+  metric = "RMSE",  # The performance metric to optimize is RMSE (Root Mean Squared Error)
+  trControl = control,  # Cross-validation control settings (previously defined in your code), defines how resampling is handled (e.g., 5-fold cross-validation)
+  tuneGrid = gridRF,  # The hyperparameter grid defined earlier to tune the Random Forest model based on values for mtry, splitrule, and min.node.size
+  importance = 'permutation'  # Specify that variable importance should be calculated using the permutation method (measuring how much the model performance drops when a feature is randomly shuffled)
+)
+
+```
+
+```{r}
+# Generate predictions on the test dataset using the trained Random Forest model with interaction terms
+predictions_rf_interaction <- predict(rf_model_interaction, newdata = test_data)  # Use the trained Random Forest model with interaction terms to predict house prices on the test data
+
+# Calculate performance metrics (RMSE and R-squared) for the Random Forest model's predictions on the test dataset
+lr_results_rf <- data.frame(  # Create a data frame to store the evaluation results
+    RMSE = RMSE(predictions_rf_interaction, test_data$price),  # Calculate the Root Mean Squared Error (RMSE) between the predicted and actual prices
+    Rsquare = R2(predictions_rf_interaction, test_data$price)  # Calculate R-squared, which measures the proportion of variance in the data explained by the model
+)
+
+# Display the model performance results for the test dataset
+lr_results_rf  # Output the performance results (RMSE and R-squared) for the Random Forest model on the test data
+
+# Predict house prices for out-of-sample data (not part of the test set) using the trained Random Forest model
+predictions_rf_oos <- predict(rf_model_interaction, london_house_prices_2019_out_of_sample)  # Use the trained Random Forest model with interaction terms to predict house prices on the out-of-sample data
+
+```
+
+## GBM
+
+### Without Interaction
+
+```{r}
+grid<-expand.grid(
+  interaction.depth = c(3, 5, 7),  # Test different values for interaction depth
+  n.trees = c(100, 200, 300),      # Test different values for the number of trees
+  shrinkage = c(0.01, 0.03, 0.1),  # Test different shrinkage values
+  n.minobsinnode = c(5, 10, 20)
+)
+
+gbm_model <-  train(
+               formula_without_interaction_var,
+               data=train_data,
+               method = "gbm",
+               trControl = control,
+               metric="RMSE",
+               preProcess = c("center", "scale"),
+               tuneGrid=grid,
+               verbose=FALSE
+)
+```
+
+```{r}
+# # Define a grid of hyperparameters to tune the Gradient Boosting Machine (GBM) model
+grid <- expand.grid(  # Use expand.grid to create a grid of hyperparameters to be tested
+  interaction.depth = 5,  # The maximum depth of each tree. Here, it is set to 5 to test models with trees of depth 5.
+  n.trees = 200,  # The number of trees in the ensemble. A higher number of trees can improve performance but also increases computational cost. Here, it's set to 200.
+  shrinkage = 0.1,  # The learning rate, also known as shrinkage. A smaller value (like 0.1) indicates slower learning but can lead to better generalization.
+  n.minobsinnode = 5  # The minimum number of observations allowed in a terminal node of the tree. Here, it's set to 5, balancing model complexity and data efficiency.
+)
+
+# Fit a Gradient Boosting Machine (GBM) model using the caret package's train function
+gbm_model <- train(  # The 'train' function trains the model based on the defined formula and settings
+  formula_without_interaction_var,  # The model formula, which includes predictors without interaction terms
+  data = train_data,  # The training dataset used to fit the model
+  method = "gbm",  # Specifies the GBM algorithm, which fits an ensemble of decision trees using boosting
+  trControl = control,  # Resampling control settings (cross-validation), defined earlier
+  metric = "RMSE",  # Root Mean Squared Error (RMSE) will be the optimization criterion for training
+  preProcess = c("center", "scale"),  # Data preprocessing steps to center and scale the predictors before training the model
+  tuneGrid = grid,  # The grid of hyperparameters to be tested, as defined earlier
+  verbose = FALSE  # Suppress the verbose output during training to keep the console clean
+)
+
+```
+
+```{r}
+# Generate predictions on the test dataset using the trained GBM model
+predictions_gbm <- predict(gbm_model, newdata = test_data)  # Use the trained GBM model to predict house prices for the test data
+
+# Calculate performance metrics (RMSE and R-squared) for the GBM model's predictions on the test dataset
+lr_results_gbm <- data.frame(  # Create a data frame to store the evaluation results
+    RMSE = RMSE(predictions_gbm, test_data$price),  # Calculate the Root Mean Squared Error (RMSE) between the predicted and actual prices
+    Rsquare = R2(predictions_gbm, test_data$price)  # Calculate R-squared, which indicates the proportion of variance explained by the model
+)
+
+# Display the model performance results for the test dataset
+lr_results_gbm  # Output the RMSE and R-squared results for the GBM model on the test data
+
+# Predict house prices for out-of-sample data (not part of the test set) using the trained GBM model
+predictions_gbm_oos <- predict(gbm_model, london_house_prices_2019_out_of_sample)  # Predict house prices on the out-of-sample data
+
+```
+
+### With Interaction
+
+```{r}
+# Define a grid of hyperparameters to tune the Gradient Boosting Machine (GBM) model with interaction terms
+grid <- expand.grid(  # Use expand.grid to create a grid of hyperparameters to be tested
+  interaction.depth = 5,  # Maximum depth of the trees. A depth of 5 means each tree can have up to 5 levels of splits. This controls the complexity of each tree.
+  n.trees = 200,  # Number of trees in the ensemble. Here, it's set to 200, which is a typical value for boosting models.
+  shrinkage = 0.1,  # Learning rate (shrinkage). A smaller value of 0.1 slows down learning and can help improve generalization.
+  n.minobsinnode = 5  # Minimum number of observations in a terminal (leaf) node. This prevents overfitting by ensuring that each terminal node has at least 5 data points.
+)
+
+# Fit a Gradient Boosting Machine (GBM) model with interaction terms using the caret package's train function
+gbm_model_interaction <- train(  # Train the GBM model with the specified parameters and formula
+  formula_interaction_var,  # The model formula that includes interaction terms between predictors
+  data = train_data,  # The training dataset used to fit the model
+  method = "gbm",  # Specifies the Gradient Boosting Machine (GBM) algorithm to use
+  trControl = control,  # Resampling control settings (cross-validation), previously defined in the code
+  metric = "RMSE",  # The model will optimize based on RMSE (Root Mean Squared Error)
+  preProcess = c("center", "scale"),  # Data preprocessing steps: centering (subtracting the mean) and scaling (dividing by the standard deviation)
+  tuneGrid = grid,  # The grid of hyperparameters (defined above) to test during model training
+  verbose = FALSE  # Suppresses detailed output during the training process to keep the console clean
+)
+
+```
+
+```{r}
+# Predict house prices on the test data using the trained GBM model with interaction terms
+predictions_gbm_interaction <- predict(gbm_model_interaction, newdata = test_data)
+# The `predict` function uses the trained model (gbm_model_interaction) to make predictions on the test data.
+# `newdata = test_data` specifies that predictions should be made on the test dataset.
+
+# Calculate the model's performance on the test data
+lr_results_gbm_interaction <- data.frame(  
+  RMSE = RMSE(predictions_gbm_interaction, test_data$price),  # Compute the Root Mean Squared Error (RMSE) between the predicted and actual prices
+  Rsquare = R2(predictions_gbm_interaction, test_data$price)  # Compute R-squared value to assess how well the model explains the variation in the price
+)
+
+# Display the performance results for the test data
+lr_results_gbm_interaction
+
+# Predict house prices for out-of-sample data using the trained GBM model with interaction terms
+predictions_gbm_oos_interaction <- predict(gbm_model_interaction, london_house_prices_2019_out_of_sample)
+
+```
+
+# Stacking
+
+Use stacking to ensemble your algorithms.
+
+### Without Interaction Variables
+
+```{r,warning=FALSE,  message=FALSE }
+
+# To implement stacking, first train all the models that you will use in the ensemble
+model_list <- caretList(
+    formula_without_interaction_var,  # Formula to define the relationship between the predictors and the target variable
+    data = train_data,  # The training dataset to be used for model training
+
+    trControl = control,  # Control options that define the resampling method, number of folds, etc. (previously defined control object)
+
+    metric = "RMSE",  # Metric to evaluate model fit, in this case, RMSE (Root Mean Squared Error)
+
+    methodList = c("lm"),  # List of methods to train models; "lm" indicates linear regression
+
+    tuneList = list(  # A list of custom models with tuning parameters for the stacking procedure
+
+      ranger = caretModelSpec(  # Random forest model (method "ranger") with specific tuning parameters
+
+        method = "ranger",  # Random forest algorithm
+
+        tuneGrid = data.frame(mtry = 5, splitrule = "variance", min.node.size = 5),  # Hyperparameters for tuning the Random Forest model
+
+        importance = 'permutation'  # Use permutation method for calculating feature importance
+      ),
+      rpart = caretModelSpec(  # Decision tree model (method "rpart") with specified tuning parameters
+
+        method = "rpart",  # Classification and regression trees (CART) algorithm
+
+        tuneGrid = data.frame(cp = 0.0011),  # Complexity parameter for pruning (controls tree size)
+
+        minbucket = 2,  # Minimum number of observations required in a terminal node
+        tuneLength = 12  # Number of parameter combinations to be tested for tuning
+      ),
+      gbm = caretModelSpec(  # Gradient boosting model (method "gbm") with specific tuning parameters
+        method = "gbm",  # Gradient Boosting Machine algorithm
+
+        tuneGrid = data.frame(  # Hyperparameters for the GBM model
+
+          interaction.depth = 5,  # Maximum depth of the trees (controls complexity)
+          n.trees = 200,  # Number of trees in the model
+          shrinkage = 0.1,  # Learning rate (shrinkage)
+          n.minobsinnode = 5  # Minimum number of observations in a terminal node
+        ),
+        verbose = FALSE,  # Disable verbose output during training
+
+        preProcess = c("center", "scale")  # Preprocess the data by centering and scaling
+      )
+    )
+)
+
+```
+
+```{r}
+resamples <- resamples(model_list)
+
+summary(resamples)
+```
+
+```{r}
+lm_ensemble <- caretStack(
+    model_list, #Models we trained above in caretList
+    method="lm", #Use linear regression to combine
+    metric="RMSE", #Use RMSE to as measure of fit quality
+    trControl=control
+  )
+
+summary(lm_ensemble)
+```
+
+```{r}
+# Use the trained ensemble model (lm_ensemble) to make predictions on the test data
+predictions_ensemble <- predict(lm_ensemble, test_data)
+
+# Calculate the RMSE (Root Mean Squared Error) and R-squared for the ensemble model's predictions
+lr_results_ensemble <- data.frame(
+  RMSE = RMSE(predictions_ensemble$pred, test_data$price),  # RMSE measures the average error between predicted and actual prices
+
+  Rsquare = R2(predictions_ensemble$pred, test_data$price)  # R-squared measures the proportion of variance explained by the model
+)
+
+# Display the performance metrics (RMSE and R-squared) of the ensemble model on the test data
+lr_results_ensemble
+
+# Use the trained ensemble model (lm_ensemble) to make predictions on out-of-sample data
+# These predictions can be used for forecasting or evaluating model generalization
+predictions_oos_ensemble <- predict(lm_ensemble, london_house_prices_2019_out_of_sample)
+
+```
+
+### With Interaction Variables
+
+```{r}
+# Define an ensemble model using caretList, which trains multiple models in parallel
+model_list_interaction <- caretList(
+    formula_interaction_var,  # Formula specifying the relationship between predictors and the target variable, including interaction terms
+    
+    data = train_data,  # The training dataset to be used for model training
+    
+    trControl = control,  # Control options for model training, such as cross-validation settings
+    
+    metric = "RMSE",  # The performance metric to evaluate each model is RMSE (Root Mean Squared Error)
+    
+    methodList = c("lm"),  # A list of models to be trained (initially only "lm", but others will be added below)
+    
+    tuneList = list(  # List of custom settings for other models being added to the ensemble
+      ranger = caretModelSpec(  # Random Forest model specification
+        
+        method = "ranger",  # Use the "ranger" method for Random Forest, which is an efficient implementation
+        
+        tuneGrid = data.frame(mtry = 5, splitrule = "variance", min.node.size = 5),  # Hyperparameters for Random Forest
+        
+        importance = 'permutation'  # Use permutation-based feature importance to assess the importance of variables
+        
+      ),  # Random Forest model with the specified tuning parameters
+      
+      rpart = caretModelSpec(  # Decision Tree model specification using the "rpart" method
+        
+        method = "rpart",  # Use the "rpart" method for Recursive Partitioning and Regression Trees (CART)
+        
+        tuneGrid = data.frame(cp = 0.0011),  # Control parameter for tree complexity (complexity parameter)
+        
+        minbucket = 2,  # Minimum number of observations per leaf node
+        
+        tuneLength = 12  # Number of different values for cp to evaluate during training
+      ),  # Decision Tree model with the specified tuning parameters
+      gbm = caretModelSpec(  # Gradient Boosting Machine model specification
+        
+        method = "gbm",  # Use the "gbm" method for Gradient Boosting Machines
+        
+        tuneGrid = data.frame(  # Hyperparameters for Gradient Boosting Machine
+          
+          interaction.depth = 5,  # Maximum depth of interaction between predictors (controls tree complexity)
+          
+          n.trees = 200,  # Number of trees to be used in the ensemble
+          
+          shrinkage = 0.1,  # Shrinkage factor (learning rate) for each iteration
+          
+          n.minobsinnode = 5  # Minimum number of observations in a terminal node
+          
+        ),
+        verbose = FALSE,  # Suppress verbose output during training
+        
+        preProcess = c("center", "scale")  # Preprocess the data by centering (mean=0) and scaling (sd=1)
+        
+      )  # Gradient Boosting Machine model with the specified tuning parameters
+    )
+)
+
+```
+
+```{r}
+# Create an ensemble model using caretStack, combining multiple models trained previously
+lm_ensemble_interaction <- caretStack(
+    model_list_interaction,  # The models we trained above using caretList, which include multiple types (e.g., Random Forest, Decision Tree, and Gradient Boosting)
+    
+    method = "lm",  # Use linear regression (lm) to combine the predictions of the individual models in the ensemble
+    
+    metric = "RMSE",  # Use RMSE (Root Mean Squared Error) as the performance metric to evaluate the ensemble model's fit quality
+    
+    trControl = control  # Use the control settings defined earlier (e.g., cross-validation settings)
+)
+
+# Output a summary of the ensemble model
+summary(lm_ensemble_interaction)  # Display the summary of the ensemble model's performance and the individual models' weights
+
+```
+
+```{r}
+# Make predictions on the test dataset using the trained ensemble model with interaction terms
+predictions_ensemble_interaction <- predict(lm_ensemble_interaction, test_data)
+
+# Calculate performance metrics (RMSE and R-squared) to evaluate the predictions of the ensemble model
+lr_results_ensemble_interaction <- data.frame(
+  RMSE = RMSE(predictions_ensemble_interaction$pred, test_data$price),  # Calculate RMSE between the predicted values and the actual prices in the test data
+  Rsquare = R2(predictions_ensemble_interaction$pred, test_data$price)  # Calculate R-squared to assess the proportion of variance explained by the model
+)
+
+# Display the results (RMSE and R-squared) for the ensemble model's predictions
+lr_results_ensemble_interaction
+
+# Predict house prices for out-of-sample data (data not seen during training) in the same way as the test data
+predictions_oos_ensemble_interaction <- predict(lm_ensemble_interaction, london_house_prices_2019_out_of_sample)
+
+```
+
+# Pick investments
+
+In this section you should use the best algorithm you identified to choose 200 properties from the out of sample data.
+
+**Selecting stacked model with interaction variables as the best model**
+
+```{r,warning=FALSE,  message=FALSE }
+
+
+# Set the number of properties to select for investment recommendations
+numchoose = 200
+
+# Load the out-of-sample data (properties that were not part of the training or test datasets)
+oos <- london_house_prices_2019_out_of_sample
+
+# Predict house prices for the out-of-sample data using the trained ensemble model
+# The predicted prices are stored in the new column 'predicted_price'
+oos$predicted_price <- predict(lm_ensemble_interaction, oos)$pred
+
+# Calculate the difference between the asking price and the predicted price for each property
+# Sort the data in descending order of this difference, to prioritize properties with the highest underpricing
+oos <- oos %>% 
+  mutate(difference = asking_price - predicted_price) %>% 
+  arrange(desc(difference))
+
+# Select the top 'numchoose' properties with the highest difference (i.e., highest underpricing)
+# Mark these properties as investment opportunities by creating a new column 'buy' and setting it to 1
+# Remove the 'difference' and 'predicted_price' columns as they are no longer needed for the final dataset
+oos_investments <- oos %>% 
+  slice_head(n = numchoose) %>%  # Select top 'numchoose' rows
+  mutate(buy = 1)  # Mark these properties as investment opportunities
+
+# Extract the IDs of the selected properties for investment
+oos_investment_ids <- oos_investments %>% 
+  select(ID)  # Select only the ID column from the investment properties
+
+# Filter the out-of-sample data to get the remaining properties that are not selected for investment
+# Mark these properties as non-investments by creating a new column 'buy' and setting it to 0
+# Remove the 'difference' and 'predicted_price' columns as they are not needed
+oos_non_investments <- oos %>% 
+  filter(! ID %in% oos_investment_ids$ID) %>%  # Filter out the selected investment properties
+  mutate(buy = 0)  # Mark these properties as non-investments
+
+# Combine the investment and non-investment properties into one dataset
+# This will be the final list of properties with an indicator of whether to buy or not
+final_csv <- bind_rows(oos_investments, oos_non_investments)
+
+# Output the final dataset to a CSV file
+# The filename should be changed to reflect the user's name, here it's set as "kotha_roopa_yashaswini.csv"
+write.csv(final_csv, "kotha_roopa_yashaswini.csv")
+
+
+```
